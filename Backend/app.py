@@ -8,14 +8,20 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from bson import ObjectId, errors
 from pymongo import errors
+from pymongo import DESCENDING
+from flask_jwt_extended import JWTManager, jwt_required, get_jwt_identity
 from datetime import datetime, timedelta
 
 app = Flask(__name__)
 CORS(app) #enable cors for all the routes
 
+
 app.config['UPLOAD_FOLDER'] = 'uploads'
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024 
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 app.config['JWT_SECRET_KEY'] = 'your_jwt_secret_key'
+app.config['JWT_TOKEN_LOCATION'] = ['headers']
+
+JWT = JWTManager(app)
 
 
 if not os.path.exists(app.config['UPLOAD_FOLDER']):
@@ -30,7 +36,7 @@ db1 = client['Food']#for food page
 # Serve static files from 'uploads' folder
 @app.route('/uploads/<filename>')
 def uploaded_file(filename):
-    return send_from_directory('uploads', filename)
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
 #LOGIN ROUTE
 @app.route('/login', methods=['POST'])
@@ -40,7 +46,8 @@ def login():
         user = users_collection.find_one({'username': username})
 
         if user and check_password_hash(user['password'],password):
-            token = jwt.encode({'user_id': str(user['_id']),'exp': datetime.utcnow() + timedelta(hours=2)},app.config['JWT_SECRET_KEY'], algorithm='HS256')
+            token = jwt.encode({'user_id': str(user['_id']),'exp': datetime.utcnow() + timedelta(hours=2)},
+            app.config['JWT_SECRET_KEY'], algorithm='HS256')
 
             return jsonify({'message': 'Login Succesful', 'token': token}), 200
         else:
@@ -65,6 +72,34 @@ def signup():
         return jsonify({'message': 'Signup Successful'}),201
     except Exception as e:
         return jsonify({'message': f'An error occurred: {str(e)}'}),500
+    
+#SearchBar recipe fetch
+@app.route('/recipePage/<id>', methods = ['GET'])
+def recipePage(id):
+    try:
+        print(f"Fetching recipe with ID: {id}")
+        categories = ['chicken_recipe', 'buff_recipe', 'pork_recipe', 'veg_recipe', 'fish_recipe', 'bakery_recipe']
+        recipe = None
+
+        for category in categories:
+            collection = db1[category]
+            recipe = collection.find_one({'_id': ObjectId(id)})
+            if recipe:
+                recipe['_id'] = str(recipe['_id'])
+                print(f"Recipe found in {category}")
+                break
+
+        if recipe:
+            return jsonify(recipe), 200
+        else:
+            print("recipe not found")
+            return json({'message': 'Recipe not found'}),404
+    
+    except Exception as e:
+        print(f"Error: {e}")
+        return jsonify({'message': 'An error occured'}),500
+
+
 
 #Recipe insert route
 @app.route('/addRecipe', methods= ['POST'])
@@ -94,7 +129,8 @@ def addRecipe():
     recipe = {
         "title": title,
         "image": image_url,
-        "likes": likes,
+        "likes": int(likes),
+        "liked_by": [],
         "date": datetime.utcnow(),
         "ingredients": ingredients,
         "steps": steps
@@ -102,6 +138,79 @@ def addRecipe():
 
     foodtype.insert_one(recipe)
     return jsonify({'message': f'Recipe added to {category} category'}), 201
+
+#Recipe edit route
+@app.route('/recipeedit/<id>', methods= ['GET', 'PUT'])
+@jwt_required()
+def recipeedit(id):
+    user_id = get_jwt_identity()
+                # title = request.form.get('title')
+                # ingredients = request.form.get('ingredients').split(', ')
+                # steps = request.form.get('steps').split(', ')
+                # image = request.form.get('image')
+
+                # recipe = recipe.query.get(id)
+                # if recipe:
+                #     recipe.title = title
+                #     recipe.ingredients = ingredients
+                #     recipe.steps = steps
+                #     if image:
+                #         image_path = f"static/uploads/{image.filename}"
+                #         image.save(image_path)
+                #         recipe.image = image_path
+                #     db.session.commit() 
+                #     return jsonify({'Message' : 'Recipe Update Successfully'})
+                # else:
+                #     return jsonify({"Error" : "Recipe Not Updated"}), 404
+
+
+    categories = ['chicken_recipe', 'buff_recipe', 'pork_recipe', 'veg_recipe', 'fish_recipe', 'bakery_recipe']
+    
+    # Ensure `id` is a valid ObjectId
+    try:
+        obj_id = ObjectId(id)
+    except Exception:
+        return jsonify({"message": "Invalid recipe ID"}), 400
+
+    if request.method == 'GET':
+
+            for category in categories:
+                collection = db1[category]
+                recipe = collection.find_one({'_id': obj_id})
+                if recipe:
+                    recipe['_id'] = str(recipe['_id'])
+                    return jsonify(recipe), 200
+            return jsonify({'message': 'Recipe not found'}), 404
+        
+
+    elif request.method == 'PUT':
+        try:
+            data = request.form
+            title = data.get('title')
+            ingredients = data.getlist('ingredients')
+            steps = data.getlist('steps')
+
+            for category in categories:
+                collection = db1[category]
+                recipe = collection.find_one({'_id': obj_id})
+                if recipe:
+                    update_data = {
+                        'title': title,
+                        'ingredients': ingredients,
+                        'steps': steps
+                    }
+
+                    # Update the recipe in the database
+                    collection.update_one(
+                        {'_id': obj_id},
+                        {'$set': update_data}
+                    )
+                    return jsonify({'message': 'Recipe updated successfully'}), 200
+
+            return jsonify({'message': 'Recipe not found'}), 404
+        except Exception as e:
+            print(f"Error: {e}")
+            return jsonify({"message": "An error occurred while updating the recipe"}), 500
 
 #Route To all recepies fetch(display)
 @app.route('/get_recipes', methods=['GET']) 
@@ -121,7 +230,7 @@ def get_recipes():
             recipes = list(foodtype.find().limit(3))
 
     else:
-        collections = ['chicken_recipe','buff_recipe','port_recipe','veg_recipe','fish_recipe','bakery_recipe']
+        collections = ['chicken_recipe','buff_recipe','pork_recipe','veg_recipe','fish_recipe','bakery_recipe']
         
         for col in collections:
             foodtype = db1[col]
@@ -139,11 +248,53 @@ def get_recipes():
 
     return jsonify(recipes),200 #Converts the recipes list into JSON format.
 
+#ROute to fetch the latest recipes
+@app.route('/latest_recipes', methods=['GET'])
+def get_latest_recipes():
+    recipes = []
+    categories = ['chicken_recipe', 'buff_recipe', 'pork_recipe', 'veg_recipe', 'fish_recipe', 'bakery_recipe']
+
+    for category in categories:
+        collection = db1[category]
+        category_recipes = list(collection.find().sort("date" , DESCENDING).limit(3))
+
+        for recipe in category_recipes:
+            recipe['_id'] = str(recipe['_id'])
+            recipe['category'] = category
+            recipes.append(recipe)
+
+    sorted_recipes =  sorted(recipes, key= lambda x : x.get('date', datetime.min), reverse = True)[:3]   
+    return jsonify(sorted_recipes),200
+
+#Search recipes Route
+@app.route('/search_recipes', methods=['GET'])
+def search_recipes():
+    query = request.args.get('query', '').strip()#This method allows you to access values passed in the query string, which is the part of the URL that comes after the question mark (?).
+    if not query:
+        return jsonify({'message':'Query is required'}), 400
+
+    categories = ['chicken_recipe', 'buff_recipe', 'pork_recipe', 'veg_recipe', 'bakery_recipe', 'fish_recipe']
+    search_results = []
+
+    for category in categories:
+        collection = db1[category]
+
+        category_recipes = list(collection.find({ 
+                "title" : {"$regex" : query, "$options" : "i" }
+        }))
+
+        for recipe in category_recipes:
+            recipe['_id'] = str(recipe['_id'])
+            recipe['category'] = category
+            search_results.append(recipe)
+
+    return jsonify(search_results), 200
+
 #fetch top 3 popular recipes
 @app.route('/popular_recipes', methods=['GET'])
 def get_popular_recipes():
     recipes = []
-    categories = ['chicken_recipe', 'buff_recipe', 'port_recipe', 'veg_recipe', 'fish_recipe', 'bakery_recipe']
+    categories = ['chicken_recipe', 'buff_recipe', 'pork_recipe', 'veg_recipe', 'fish_recipe', 'bakery_recipe']
 
     # Collect recipes from all categories
     for category in categories:
@@ -160,57 +311,55 @@ def get_popular_recipes():
 
     return jsonify(top_recipes), 200
 
-#like route
-@app.route('/like_recipe/<id>', methods = ['POST'])
-
-
-def like_recipe(id):
+#toggle_like route
+@app.route('/toggle_like/<id>', methods=['POST'])
+@jwt_required()
+def toggle_like(id):
     data = request.get_json()
-    category = data.get('category')
-    user_id = data.get('_id')
+    user_id = get_jwt_identity()
 
-    if category:
-        collection = db1[category]
-        recipe = collection.find_one({'_id': ObjectId(id)})
+    collection = db1["recipes"]
+    recipe = collection.find_one({'_id': ObjectId(id)})
 
-        if recipe:
-            current_likes = recipe.get('likes', 0)
-            user_has_liked = recipe.get('user_has_liked', [])
-
-            # new_likes = current_likes -1 if user_has_liked else current_likes + 1
-            if request.user_id not in user_has_liked:
-                user_has_liked.append(user_id)
-                new_likes = current_likes + 1
-
-                collection.update_one({'_id': ObjectId(id)},{'$set': {'likes': new_likes, 'user_has_liked': user_has_liked}})
-            else:
-                new_likes = current_likes - 1
-                user_has_liked.remove(user_id)
-                return jsonify({'message': 'User has already liked'}), 200
-
+    if recipe:
+        if user_id in recipe.get('liked_by', []):
+            new_likes = max(recipe.get('likes', 1) - 1, 0)
+            collection.update_one(  
+                {'_id': ObjectId(id)},
+                {'$set': {'likes': new_likes}, '$pull': {'liked_by': user_id}}
+            )
+            return jsonify({'likes': new_likes, 'liked': False}), 200
         else:
-            return jsonify({'message':'Recipe not found'}), 404
-    return jsonify({'message':'network error'}), 400
+            new_likes = recipe.get('likes', 0) + 1
+            collection.update_one(
+                {'_id': ObjectId(id)},
+                {'$set': {'likes': new_likes}, '$addToSet': {'liked_by': user_id}}
+            )
+            return jsonify({'likes': new_likes, 'liked': True}), 200  
 
-#Unlike route
-@app.route('/unlike_recipe/<id>', methods=['POST'])
-def unlike_recipe(id):
-    data = request.get_json()
-    category = data.get('category')
+    return jsonify({'message': 'Recipe not found'}), 404
 
-    if category:
-        collection = db1[category]
-        try: 
-            recipe = collection.find_one({'_id': ObjectId(id)})
-        except errors.InvalidId:
-            return jsonify({'message': 'Invalid recipe ID format'}),400
 
-        if recipe and recipe.get('likes', 0) > 0:
+
+# #Unlike route
+# @app.route('/unlike_recipe/<id>', methods=['POST'])
+# def unlike_recipe(id):
+#     data = request.get_json()
+#     category = data.get('category')
+
+#     if category:
+#         collection = db1[category]
+#         try: 
+#             recipe = collection.find_one({'_id': ObjectId(id)})
+#         except errors.InvalidId:
+#             return jsonify({'message': 'Invalid recipe ID format'}),400
+
+#         if recipe and recipe.get('likes', 0) > 0:
             
-            new_likes = recipe.get('likes', 0) - 1
-            collection.update_one({'_id': ObjectId(id)},{'$set':{'likes': new_likes}})
-            return jsonify({'message':'Like is decreased','likes': new_likes}),200
-    return jsonify({'message':'Dislike is unsuccessful'}),400
+#             new_likes = recipe.get('likes', 0) - 1
+#             collection.update_one({'_id': ObjectId(id)},{'$set':{'likes': new_likes}})
+#             return jsonify({'message':'Like is decreased','likes': new_likes}),200
+#     return jsonify({'message':'Dislike is unsuccessful'}),400
 
 #Delete route
 @app.route('/del_recipes/<id>', methods =['DELETE'])
@@ -248,7 +397,6 @@ def del_recipes(id):
     else:
         return jsonify({'message':'result not found'}),400
     
-
 
 
 if __name__ == '__main__':
